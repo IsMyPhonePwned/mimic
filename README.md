@@ -130,24 +130,6 @@ Options:
 - `--json` — One JSON line per file (path, verdict, threats, size).
 - `-q, --quiet` — Only print malicious/suspicious paths.
 
-## WASM / Browser
-
-A WebAssembly build lets you analyze files locally in the browser (nothing is uploaded).
-
-1. Install [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/), then from the repo root:
-
-   ```bash
-   cd wasm && wasm-pack build --target web --out-dir pkg
-   ```
-
-2. Serve the `wasm` directory over HTTP (e.g. `python3 -m http.server 8000`) and open:
-
-   ```
-   http://localhost:8000/wasm/
-   ```
-
-3. Use the page to drop or select a file; the verdict and full JSON result are shown (Malicious / Suspicious / Benign).
-
 ## License
 
 Apache-2.0 (see [LICENSE](LICENSE)).
