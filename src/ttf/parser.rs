@@ -96,15 +96,3 @@ pub fn table_bytes<'a>(data: &'a [u8], table: &TtfTable) -> Option<&'a [u8]> {
     Some(&data[start..end])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ttf_magic() {
-        let mut h = vec![0u8; 32];
-        h[0..4].copy_from_slice(&TTF_VERSION_1.to_be_bytes());
-        h[4..6].copy_from_slice(&5u16.to_be_bytes());
-        assert!(is_ttf(&h));
-    }
-}

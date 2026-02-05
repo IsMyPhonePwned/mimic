@@ -10,4 +10,4 @@ mod parser;
 pub mod analyzer;
 
 pub use analyzer::analyze_rar;
-pub use parser::is_rar;
+pub use parser::{collect_file_names, find_rar_signature, is_rar, RarVersion};

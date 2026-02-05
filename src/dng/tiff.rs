@@ -336,27 +336,3 @@ pub fn read_sub_ifd_offsets(
     Some(out)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tiff_header_little() {
-        let data: Vec<u8> = vec![
-            0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
-        ];
-        let (bo, ifd0) = read_tiff_header(&data).unwrap();
-        assert!(matches!(bo, Endian::Little));
-        assert_eq!(ifd0, 8);
-    }
-
-    #[test]
-    fn tiff_header_big() {
-        let data: Vec<u8> = vec![
-            0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08,
-        ];
-        let (bo, ifd0) = read_tiff_header(&data).unwrap();
-        assert!(matches!(bo, Endian::Big));
-        assert_eq!(ifd0, 8);
-    }
-}

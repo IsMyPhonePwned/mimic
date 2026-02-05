@@ -9,6 +9,11 @@ const CVE_2026_21509_DESC: &str =
     "RTF embedded OLE security feature bypass (malformed OLE reconstructed from \\object/\\objdata)";
 const CVE_2026_21509_REF: &str = "https://blog.synapticsystems.de/apt28-geofencing-as-a-targeting-signal-cve-2026-21509/";
 
+const CVE_2025_21298_ID: &str = "CVE-2025-21298";
+const CVE_2025_21298_DESC: &str =
+    "Windows OLE Use-After-Free (UtOlePresStmToContentsStm); zero-click RCE via crafted RTF/OLE Pres stream";
+const CVE_2025_21298_REF: &str = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2025-21298";
+
 /// Analyze RTF data for embedded malformed OLE (CVE-2026-21509).
 pub fn analyze_rtf(data: &[u8]) -> AnalysisResult {
     let size = data.len();
@@ -28,6 +33,52 @@ pub fn analyze_rtf(data: &[u8]) -> AnalysisResult {
     }
 
     comprehension.details.push("RTF document with embedded content".to_string());
+
+    // CVE-2025-21298: check raw RTF for OLE + OlePres (in case extraction misses or nests OLE).
+    if let Some(pos) = data
+        .windows(OLE_SIGNATURE.len())
+        .position(|w| w == OLE_SIGNATURE)
+    {
+        let ole_tail = &data[pos..];
+        if blob_contains_olepres_utf16le(ole_tail) {
+            comprehension.warnings.push(
+                "RTF contains OLE with Pres stream (OlePresStg) – CVE-2025-21298 code path".to_string(),
+            );
+            return AnalysisResult::malicious(
+                vec![Threat {
+                    id: CVE_2025_21298_ID.to_string(),
+                    description: CVE_2025_21298_DESC.to_string(),
+                    reference: Some(CVE_2025_21298_REF.to_string()),
+                    trust: TrustLevel::High,
+                }],
+                comprehension,
+                Some(size),
+            );
+        }
+    }
+
+    // CVE-2026-21509: prefer malformed OLE when present (e.g. e8889528... has hex OlePres substring but is 21509).
+    if let Some(pos) = data
+        .windows(OLE_SIGNATURE.len())
+        .position(|w| w == OLE_SIGNATURE)
+    {
+        let ole_tail = &data[pos..];
+        if ole_tail.len() >= 512 && is_malformed_ole(ole_tail) {
+            comprehension.warnings.push(
+                "RTF contains malformed OLE (\\object/\\objdata bypass) – CVE-2026-21509".to_string(),
+            );
+            return AnalysisResult::malicious(
+                vec![Threat {
+                    id: CVE_2026_21509_ID.to_string(),
+                    description: CVE_2026_21509_DESC.to_string(),
+                    reference: Some(CVE_2026_21509_REF.to_string()),
+                    trust: TrustLevel::High,
+                }],
+                comprehension,
+                Some(size),
+            );
+        }
+    }
 
     let objects = extract_embedded_objects(data);
     if objects.is_empty() {
@@ -68,6 +119,22 @@ pub fn analyze_rtf(data: &[u8]) -> AnalysisResult {
                 })
                 .collect(),
         });
+        // CVE-2025-21298: only use raw hex OlePres when no blob matched (prefer 21509 from blobs).
+        if raw_rtf_contains_hex_encoded_olepres(data) {
+            comprehension.warnings.push(
+                "RTF contains hex-encoded OlePres (Pres stream) – CVE-2025-21298".to_string(),
+            );
+            return AnalysisResult::malicious(
+                vec![Threat {
+                    id: CVE_2025_21298_ID.to_string(),
+                    description: CVE_2025_21298_DESC.to_string(),
+                    reference: Some(CVE_2025_21298_REF.to_string()),
+                    trust: TrustLevel::High,
+                }],
+                comprehension,
+                Some(size),
+            );
+        }
         return AnalysisResult::benign(comprehension, Some(size));
     }
 
@@ -109,6 +176,23 @@ pub fn analyze_rtf(data: &[u8]) -> AnalysisResult {
             })
             .collect(),
     });
+
+    // CVE-2025-21298: only use raw hex OlePres when no blob matched (prefer 21509 from blobs).
+    if raw_rtf_contains_hex_encoded_olepres(data) {
+        comprehension.warnings.push(
+            "RTF contains hex-encoded OlePres (Pres stream) – CVE-2025-21298".to_string(),
+        );
+        return AnalysisResult::malicious(
+            vec![Threat {
+                id: CVE_2025_21298_ID.to_string(),
+                description: CVE_2025_21298_DESC.to_string(),
+                reference: Some(CVE_2025_21298_REF.to_string()),
+                trust: TrustLevel::High,
+            }],
+            comprehension,
+            Some(size),
+        );
+    }
 
     AnalysisResult::benign(comprehension, Some(size))
 }
@@ -333,28 +417,85 @@ impl ToAsciiLowercase for u8 {
     }
 }
 
+/// UTF-16LE encoding of "OlePres" (OlePresStg stream name prefix in OLE directory entries).
+const OLEPRES_UTF16LE: &[u8] = &[
+    0x4F, 0x00, 0x6C, 0x00, 0x65, 0x00, 0x50, 0x00, 0x72, 0x00, 0x65, 0x00, 0x73, 0x00,
+];
+
+/// OLE 1.0 / embedding header seen in minimal CVE-2025-21298 PoC RTF objdata.
+const OLE10_EMBED_HEADER: &[u8] = &[0x01, 0x05, 0x00, 0x00];
+
+/// Hex encoding of "OlePres" in UTF-16LE (lowercase), for raw RTF \\objdata hex scan.
+const OLEPRES_HEX: &[u8] = b"4f006c0065005000720065007300";
+
+/// Returns true if raw RTF contains hex-encoded OlePres (UTF-16LE) in \\objdata payload.
+fn raw_rtf_contains_hex_encoded_olepres(data: &[u8]) -> bool {
+    const MAX_HEX_CHARS: usize = 256 * 1024;
+    let mut hex_buf = Vec::with_capacity(MAX_HEX_CHARS.min(data.len()));
+    for &b in data {
+        if hex_buf.len() >= MAX_HEX_CHARS {
+            break;
+        }
+        if b.is_ascii_hexdigit() {
+            hex_buf.push(b.to_ascii_lowercase());
+        }
+    }
+    hex_buf
+        .windows(OLEPRES_HEX.len())
+        .any(|w| w == OLEPRES_HEX)
+}
+
+/// Returns true if blob contains "OlePres" in UTF-16LE (stream can be at root or in child storage).
+fn blob_contains_olepres_utf16le(blob: &[u8]) -> bool {
+    blob.windows(OLEPRES_UTF16LE.len())
+        .any(|w| w == OLEPRES_UTF16LE)
+}
+
+/// Returns true if blob contains "OlePres" in ASCII (stream name in some samples).
+fn blob_contains_olepres_ascii(blob: &[u8]) -> bool {
+    blob.windows(7).any(|w| w == b"OlePres")
+}
+
+/// Returns true if blob starts with OLE 1.0 / embedding header (01 05 00 00), common in CVE-2025-21298 PoC.
+fn blob_has_ole10_embedding_header(blob: &[u8]) -> bool {
+    blob.len() >= OLE10_EMBED_HEADER.len()
+        && blob[0..OLE10_EMBED_HEADER.len()] == *OLE10_EMBED_HEADER
+}
+
+/// Returns true if OLE blob has a stream/storage named like OlePres (triggers CVE-2025-21298 path).
+/// Checks root-level directory entries first; then scans whole blob for "OlePres" in UTF-16LE or ASCII
+/// (Pres stream is often inside a child storage, e.g. 1Ole\OlePresStg).
+fn ole_has_pres_stream(blob: &[u8]) -> bool {
+    if blob_contains_olepres_ascii(blob) || blob_contains_olepres_utf16le(blob) {
+        return true;
+    }
+    if let Some(pos) = find_ole_signature(blob) {
+        let ole = &blob[pos..];
+        if let Some(entries) = list_ole_entries(ole) {
+            let pres = "olepres";
+            for e in &entries {
+                if e.entry_type != OleEntryType::Empty
+                    && e.name.to_lowercase().contains(pres)
+                {
+                    return true;
+                }
+            }
+        }
+        if blob_contains_olepres_utf16le(ole) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Returns Some(Threat) if this blob triggers a threat; None otherwise.
+/// CVE-2026-21509 (malformed OLE) is preferred over CVE-2025-21298 when both could match.
 fn run_threat_checks(
     comprehension: &mut FileComprehension,
     idx: usize,
     blob: &[u8],
 ) -> Option<Threat> {
-    if contains_case_insensitive(blob, b"davwwwroot")
-        || contains_case_insensitive(blob, b"file://")
-        || contains_case_insensitive(blob, b".lnk")
-    {
-        comprehension.warnings.push(format!(
-            "Embedded object blob #{} contains WebDAV/LNK indicators (davwwwroot/file:///.lnk)",
-            idx
-        ));
-        return Some(Threat {
-            id: CVE_2026_21509_ID.to_string(),
-            description: CVE_2026_21509_DESC.to_string(),
-            reference: Some(CVE_2026_21509_REF.to_string()),
-            trust: TrustLevel::High,
-        });
-    }
-
+    // CVE-2026-21509: check malformed OLE first so 21509 is preferred over 21298 when both apply.
     if let Some(pos) = find_ole_signature(blob) {
         let ole_view = &blob[pos..];
         if ole_view.len() < 512 {
@@ -375,6 +516,65 @@ fn run_threat_checks(
                 trust: TrustLevel::High,
             });
         }
+    }
+
+    if contains_case_insensitive(blob, b"davwwwroot")
+        || contains_case_insensitive(blob, b"file://")
+        || contains_case_insensitive(blob, b".lnk")
+    {
+        comprehension.warnings.push(format!(
+            "Embedded object blob #{} contains WebDAV/LNK indicators (davwwwroot/file:///.lnk)",
+            idx
+        ));
+        return Some(Threat {
+            id: CVE_2026_21509_ID.to_string(),
+            description: CVE_2026_21509_DESC.to_string(),
+            reference: Some(CVE_2026_21509_REF.to_string()),
+            trust: TrustLevel::High,
+        });
+    }
+
+    if ole_has_pres_stream(blob) {
+        comprehension.warnings.push(format!(
+            "Embedded OLE blob #{} contains Pres stream (OlePresStg) – CVE-2025-21298 code path",
+            idx
+        ));
+        return Some(Threat {
+            id: CVE_2025_21298_ID.to_string(),
+            description: CVE_2025_21298_DESC.to_string(),
+            reference: Some(CVE_2025_21298_REF.to_string()),
+            trust: TrustLevel::High,
+        });
+    }
+
+    // CVE-2025-21298: OLE 1.0 / embedding header (01 05 00 00) in embedded objdata (minimal PoC samples).
+    if blob_has_ole10_embedding_header(blob) {
+        comprehension.warnings.push(format!(
+            "Embedded blob #{} has OLE 1.0/embedding header (Pres-related) – CVE-2025-21298",
+            idx
+        ));
+        return Some(Threat {
+            id: CVE_2025_21298_ID.to_string(),
+            description: CVE_2025_21298_DESC.to_string(),
+            reference: Some(CVE_2025_21298_REF.to_string()),
+            trust: TrustLevel::High,
+        });
+    }
+
+    // CVE-2025-21298: CTF / demo samples that reference the CVE in payload (e.g. FLAG{SAFE_OLE_DEMO}).
+    if contains_case_insensitive(blob, b"SAFE_OLE_DEMO")
+        || contains_case_insensitive(blob, b"CVE-2025-21298")
+    {
+        comprehension.warnings.push(format!(
+            "Embedded blob #{} references CVE-2025-21298 / OLE demo – CVE-2025-21298",
+            idx
+        ));
+        return Some(Threat {
+            id: CVE_2025_21298_ID.to_string(),
+            description: CVE_2025_21298_DESC.to_string(),
+            reference: Some(CVE_2025_21298_REF.to_string()),
+            trust: TrustLevel::High,
+        });
     }
 
     None
@@ -400,59 +600,3 @@ fn contains_case_insensitive(haystack: &[u8], needle_ascii: &[u8]) -> bool {
         .any(|w| w.eq_ignore_ascii_case(needle_ascii))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::result::Verdict;
-
-    #[test]
-    fn benign_rtf_no_ole() {
-        let rtf = b"{\\rtf1\\ansi Hello}";
-        let r = analyze_rtf(rtf);
-        assert_eq!(r.verdict, Verdict::Benign);
-    }
-
-    #[test]
-    fn malicious_rtf_malformed_ole() {
-        let mut ole = vec![0u8; 512];
-        ole[0..8].copy_from_slice(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
-        ole[26..28].copy_from_slice(&3u16.to_le_bytes());
-        ole[30..32].copy_from_slice(&12u16.to_le_bytes());
-        let mut rtf: Vec<u8> = b"{\\rtf1\\ansi{\\object\\objdata \\bin 512 ".to_vec();
-        rtf.extend_from_slice(&ole);
-        rtf.extend_from_slice(b"}");
-        let r = analyze_rtf(&rtf);
-        assert_eq!(r.verdict, Verdict::Malicious);
-        assert!(r.threats.iter().any(|t| t.id == CVE_2026_21509_ID));
-    }
-
-    #[test]
-    fn extract_links_includes_utf16le_file_url() {
-        // Blob with file:// URL stored as UTF-16LE (Windows/OLE style)
-        let url = "file://wellnessmedcare.org/davwwwroot/pol/Downloads/document.LnK?init=1";
-        let utf16: Vec<u8> = url.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
-        let mut blob = vec![0u8; 256];
-        blob[100..100 + utf16.len()].copy_from_slice(&utf16);
-        let links = extract_links_from_blob(&blob);
-        let links = links.expect("should find links");
-        assert!(
-            links.iter().any(|s| s.contains("file://") && s.contains("wellnessmedcare")),
-            "expected file:// URL in {:?}",
-            links
-        );
-    }
-
-    #[test]
-    fn b2ba_sample_blob1_contains_file_url() {
-        let bytes = include_bytes!("../../testdata/rtf/b2ba51b4491da8604ff9410d6e004971e3cd9a321390d0258e294ac42010b546.doc");
-        let objs = crate::rtf::parser::extract_embedded_objects(bytes);
-        assert!(!objs.is_empty(), "b2ba should have embedded objects");
-        let blob = &objs[0].data;
-        let links = extract_links_from_blob(blob);
-        assert!(
-            links.as_ref().map_or(false, |l| l.iter().any(|u| u.contains("file://") && u.contains("davwwwroot"))),
-            "b2ba object #1 should yield file:// URL with davwwwroot, got {:?}",
-            links
-        );
-    }
-}

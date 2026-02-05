@@ -30,9 +30,11 @@
             │ CVE-2025-21043            │ Excessive opcode count in OpcodeList
             │ DNG-TILE-CONFIG (low FP)  │ Invalid tile count / dimensions
   ──────────┼───────────────────────────┼────────────────────────────────────
-  RTF       │ CVE-2026-21509            │ Malformed OLE in \object/\objdata
+  RTF       │ CVE-2025-21298            │ OLE Pres stream (UtOlePresStmToContentsStm UAF; zero-click)
+            │ CVE-2026-21509            │ Malformed OLE in \object/\objdata
   ──────────┼───────────────────────────┼────────────────────────────────────
-  TTF/OTF   │ CVE-2023-41990            │ ADJUST opcodes (0x8F/0x90) in bytecode
+  TTF/OTF   │ CVE-2025-27363            │ FreeType GX/variable font subglyph (signed short wraparound)
+            │ CVE-2023-41990            │ ADJUST opcodes (0x8F/0x90) in bytecode
   ──────────┼───────────────────────────┼────────────────────────────────────
   RAR       │ CVE-2025-8088             │ Path traversal via ADS (:.. \ …)
   ──────────┼───────────────────────────┼────────────────────────────────────
@@ -50,12 +52,18 @@
 
 ### RTF (Rich Text Format)
 
+- **[CVE-2025-21298](https://msrc.microsoft.com/update-guide/vulnerability/CVE-2025-21298)** — Windows OLE Use-After-Free (actively exploited).  
+  Detection: RTF/OLE with a **Pres stream** (OlePresStg) that triggers `UtOlePresStmToContentsStm` in ole32.dll; zero-click RCE via Outlook preview.
+
 - **[CVE-2026-21509](https://blog.synapticsystems.de/apt28-geofencing-as-a-targeting-signal-cve-2026-21509/)** — Microsoft Office security feature bypass  
   Detection: RTF documents that embed **malformed OLE** via `\object` / `\objdata` (e.g. `\bin N` blobs). Word reconstructs these in memory; inconsistent OLE headers/structure bypass trust checks. No macros or external content; exploit is below typical document scanners.
 
 **RTF extraction (oleid-style):** For analysis, the library extracts embedded objects with metadata (`\objclass`, embed/ocx kind, payload size) and lists OLE directory entries (stream/storage names) for each embedded OLE blob. The result’s `comprehension.extraction_rtf` holds this structured data (and is included in CLI `--json` output).
 
 ### TTF/OTF (TrueType / OpenType)
+
+- **[CVE-2025-27363](https://www.cve.org/CVERecord?id=CVE-2025-27363)** — FreeType OOB write (CISA KEV; actively exploited).  
+  Detection: GX or variable font tables (**gvar**, **fvar**, **feat**, **mort**, **morx**) with a 2-byte value in the header that is negative as i16 (0x8000..0xFFFF), triggering signed→unsigned wraparound in subglyph allocation.
 
 - **[CVE-2023-41990](https://securelist.com/operation-triangulation-the-last-hardware-mystery/111669/)** — Operation Triangulation: undocumented Apple-only **ADJUST** TrueType instruction (opcodes 0x8F, 0x90).  
   Detection: scan of **fpgm**, **prep**, and **glyf** bytecode for ADJUST. Logic follows [elegant-bouncer](https://github.com/msuiche/elegant-bouncer/blob/main/src/ttf.rs) (variable-length opcode handling: NPUSHB, NPUSHW, PUSHB[n], PUSHW[n], etc.).

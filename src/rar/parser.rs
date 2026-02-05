@@ -226,36 +226,3 @@ pub fn collect_file_names(data: &[u8]) -> Vec<String> {
         RarVersion::Rar4 => collect_file_names_rar4(data, first_block),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rar5_signature_found() {
-        let mut v = vec![0u8; 20];
-        v[10..18].copy_from_slice(RAR5_SIGNATURE);
-        let r = find_rar_signature(&v);
-        assert!(r.is_some());
-        let (ver, off) = r.unwrap();
-        assert_eq!(ver, RarVersion::Rar5);
-        assert_eq!(off, 18);
-    }
-
-    #[test]
-    fn rar4_signature_found() {
-        let mut v = vec![0u8; 20];
-        v[5..12].copy_from_slice(RAR4_SIGNATURE);
-        let r = find_rar_signature(&v);
-        assert!(r.is_some());
-        let (ver, off) = r.unwrap();
-        assert_eq!(ver, RarVersion::Rar4);
-        assert_eq!(off, 12);
-    }
-
-    #[test]
-    fn not_rar() {
-        assert!(!is_rar(b"PK\x03\x04"));
-        assert!(!is_rar(b"Rar!\x1A\x06\x00"));
-    }
-}

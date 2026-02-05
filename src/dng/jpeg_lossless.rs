@@ -45,26 +45,3 @@ pub fn find_sof3(data: &[u8]) -> Option<(u8, usize)> {
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sof3_found() {
-        // Minimal SOF3: length=8, precision=8, height=1, width=1, components=2
-        let data = [
-            0x00, 0x00, 0xFF, 0xC3, 0x00, 0x08, 0x08, 0x00, 0x01, 0x00, 0x01, 0x02,
-        ];
-        let count = sof3_component_count(&data).unwrap();
-        assert_eq!(count, 2);
-    }
-
-    #[test]
-    fn sof3_one_component() {
-        let data = [
-            0xFF, 0xC3, 0x00, 0x08, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01,
-        ];
-        let count = sof3_component_count(&data).unwrap();
-        assert_eq!(count, 1);
-    }
-}

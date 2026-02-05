@@ -11,7 +11,27 @@ const CVE_2023_41990_DESC: &str =
     "Undocumented Apple-only TrueType ADJUST instruction (Operation Triangulation)";
 const CVE_2023_41990_REF: &str = "https://securelist.com/operation-triangulation-the-last-hardware-mystery/111669/";
 
-/// Analyze TTF/OTF for CVE-2023-41990 (ADJUST in fpgm, prep, or glyf).
+const CVE_2025_27363_ID: &str = "CVE-2025-27363";
+const CVE_2025_27363_DESC: &str =
+    "FreeType OOB write in GX/variable font subglyph parsing (signed short→unsigned wraparound)";
+const CVE_2025_27363_REF: &str = "https://www.cve.org/CVERecord?id=CVE-2025-27363";
+
+/// True if table header (first 64 bytes) contains a 2-byte big-endian value in 0x8000..0xFFFF (negative as i16).
+/// FreeType CVE-2025-27363: signed short "limit" used as allocation size → wraparound → OOB write; count/limit live in header.
+fn has_negative_i16_be_in_table(bytes: &[u8]) -> bool {
+    let limit = bytes.len().min(64);
+    let mut i = 0;
+    while i + 2 <= limit {
+        let u = u16::from_be_bytes([bytes[i], bytes[i + 1]]);
+        if u >= 0x8000 {
+            return true;
+        }
+        i += 2;
+    }
+    false
+}
+
+/// Analyze TTF/OTF for CVE-2023-41990 (ADJUST in fpgm, prep, or glyf) and CVE-2025-27363 (GX/var).
 pub fn analyze_ttf(data: &[u8]) -> AnalysisResult {
     let size = data.len();
     let mut comprehension = FileComprehension {
@@ -30,6 +50,32 @@ pub fn analyze_ttf(data: &[u8]) -> AnalysisResult {
     }
 
     comprehension.details.push("TTF/OTF SFNT with table directory".to_string());
+
+    // CVE-2025-27363: FreeType GX/variable font subglyph parsing – signed short used as size → wraparound.
+    // Tables that trigger the vulnerable path: gvar (variable), fvar, feat, mort, morx (GX).
+    const GX_VAR_TABLES: &[[u8; 4]] = &[*b"gvar", *b"fvar", *b"feat", *b"mort", *b"morx"];
+    for tag in GX_VAR_TABLES {
+        if let Some(tbl) = get_table(data, tag) {
+            if let Some(bytes) = table_bytes(data, &tbl) {
+                if has_negative_i16_be_in_table(bytes) {
+                    comprehension.warnings.push(format!(
+                        "GX/variable table {:?} contains value that could trigger FreeType CVE-2025-27363 (signed short wraparound)",
+                        std::str::from_utf8(tag).unwrap_or("?")
+                    ));
+                    return AnalysisResult::malicious(
+                        vec![Threat {
+                            id: CVE_2025_27363_ID.to_string(),
+                            description: CVE_2025_27363_DESC.to_string(),
+                            reference: Some(CVE_2025_27363_REF.to_string()),
+                            trust: TrustLevel::High,
+                        }],
+                        comprehension,
+                        Some(size),
+                    );
+                }
+            }
+        }
+    }
 
     if let Some(fpgm) = get_table(data, b"fpgm") {
         if let Some(bytes) = table_bytes(data, &fpgm) {
@@ -151,35 +197,3 @@ pub fn analyze_ttf(data: &[u8]) -> AnalysisResult {
     AnalysisResult::benign(comprehension, Some(size))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::result::Verdict;
-
-    #[test]
-    fn benign_ttf_no_adjust() {
-        let mut v = vec![0u8; 256];
-        v[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
-        v[4..6].copy_from_slice(&1u16.to_be_bytes());
-        v[12..16].copy_from_slice(b"fpgm");
-        v[24..28].copy_from_slice(&16u32.to_be_bytes());
-        v[28..32].copy_from_slice(&4u32.to_be_bytes());
-        v[32..36].copy_from_slice(&[0x40, 0x01, 0x00, 0x59]);
-        let r = analyze_ttf(&v);
-        assert_eq!(r.verdict, Verdict::Benign);
-    }
-
-    #[test]
-    fn malicious_ttf_adjust_in_fpgm() {
-        let mut v = vec![0u8; 256];
-        v[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
-        v[4..6].copy_from_slice(&1u16.to_be_bytes());
-        v[12..16].copy_from_slice(b"fpgm");
-        v[20..24].copy_from_slice(&32u32.to_be_bytes());
-        v[24..28].copy_from_slice(&4u32.to_be_bytes());
-        v[32] = 0x8F;
-        let r = analyze_ttf(&v);
-        assert_eq!(r.verdict, Verdict::Malicious);
-        assert!(r.threats.iter().any(|t| t.id == CVE_2023_41990_ID));
-    }
-}
